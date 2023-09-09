@@ -1,0 +1,152 @@
+---
+namespace: rudderstack
+
+db:
+  defines: runnable
+  inherits: postgresql/base
+  metadata:
+    private: true
+  containers:
+    postgres:
+      image-tag: 15-alpine
+      environment:
+        - POSTGRES_USER=rudder
+        - POSTGRES_PASSWORD=password
+        - POSTGRES_DB=jobsdb
+      paths:
+        - <- `${monk-volume-path}/rudderstack/postgresql:/var/lib/postgresql/data`
+  services:
+    postgres:
+      container: postgres
+      port: 5432
+      protocol: tcp
+
+metrics-exporter:
+  defines: runnable
+  metadata:
+    private: true
+  containers:
+    metrics:
+      image: prom/statsd-exporter
+      image-tag: v0.22.4
+  services:
+    metrics:
+      container: metrics
+      port: 9012
+      protocol: tcp
+    statsd:
+      container: metrics
+      port: 9125
+      protocol: tcp
+
+d-transformer:
+  defines: runnable
+  metadata:
+    private: true
+  containers:
+    transformer:
+      image: rudderstack/rudder-transformer
+      image-tag: latest
+      environment:
+        - <- "STATSD_SERVER_HOST=" connection-hostname("statsd") concat-all
+        - <- "STATSD_SERVER_PORT=" connection-hostname("statsd") concat-all
+  depends:
+    wait-for:
+      runnables:
+        - rudderstack/metrics-exporter
+      timeout: 60
+  services:
+    transformer:
+      container: transformer
+      port: 9090
+      protocol: tcp
+  connections:
+    statsd:
+      runnable: rudderstack/metrics-exporter
+      service: statsd
+
+backend:
+  defines: runnable
+  metadata:
+    private: true
+  containers:
+    backend:
+      image: rudderlabs/rudder-server
+      image-tag: latest
+      bash: <- "sh -c '/wait-for " connection-hostname("db") ":" connection-port("db") " -- /rudder-server'" concat-all
+      paths:
+        - <- `${monk-volume-path}/dragonflydb:/data`
+      environment:
+        - <- "JOBS_DB_HOST=" connection-hostname("db") concat-all
+        - JOBS_DB_USER=rudder
+        - <- "JOBS_DB_PORT=" connection-port("db") concat-all
+        - JOBS_DB_DB_NAME=jobsdb
+        - JOBS_DB_PASSWORD=password
+        - <- "DEST_TRANSFORM_URL=http://" connection-hostname("transformer") ":" connection-port("transformer") concat-all
+        - CONFIG_BACKEND_URL=https://api.rudderstack.com
+        - <- "WORKSPACE_TOKEN=" $token concat-all
+        - <- "STATSD_SERVER_URL=" connection-hostname("statsd") ":" connection-port("statsd") concat-all
+        - RSERVER_GATEWAY_WEBHOOK_SOURCE_LIST_FOR_PARSING_PARAMS=Shopify
+  services:
+    http:
+      container: backend
+      port: 8080
+      protocol: tcp
+      host-port: 8080
+  depends:
+    wait-for:
+      runnables:
+        - rudderstack/db
+        - rudderstack/metrics-exporter
+        - rudderstack/d-transformer
+      timeout: 60
+  connections:
+    db:
+      runnable: rudderstack/db
+      service: postgres
+    transformer:
+      runnable: rudderstack/d-transformer
+      service: transformer
+    statsd:
+      runnable: rudderstack/metrics-exporter
+      service: statsd
+  variables:
+    token:
+      type: string
+      value: <- $workspace_token default("<Put-Your-Token-Here>")
+
+stack:
+  defines: process-group
+  metadata:
+    website: https://www.rudderstack.com/
+    name: Rudderstack
+    icon: https://www.rudderstack.com/images/rudderstack_thumbnail.png
+    publisher: monk.io
+    description: |
+      RudderStack is the cutting-edge data infrastructure solution you've been searching for.
+
+      Empower your business with seamless data collection, transformation, and routing capabilities.
+
+      With RudderStack, you can effortlessly integrate and unify data from various sources, ensuring a holistic view of your customer base.
+
+      Take control of your data pipelines with powerful, customizable workflows, and unlock insights that drive growth and innovation.
+
+      Trust in RudderStack to streamline your data operations and propel your business forward into a data-driven future.
+
+      ---
+
+      Notes:
+
+      This kit requires you to provide your workspace token that can be acquired on https://www.rudderstack.com/
+    source: https://github.com/rudderlabs
+    tags: datainfrastructure, dataintegration, datapipeline, customerinsights, datamanagement, analyticsplatform, dataengineering
+    version: 1.0
+  runnable-list:
+    - rudderstack/db
+    - rudderstack/metrics-exporter
+    - rudderstack/d-transformer
+    - rudderstack/backend
+  variables:
+    workspace_token:
+      type: string
+      value: <Put-Your-Token-Here>
